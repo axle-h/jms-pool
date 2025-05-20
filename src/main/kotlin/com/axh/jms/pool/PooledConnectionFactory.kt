@@ -169,3 +169,6 @@ class PooledConnectionFactory @JvmOverloads constructor(
 @JvmOverloads
 fun ConnectionFactory.pooled(options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions()) =
     PooledConnectionFactory(this, options)
+
+fun <R> ConnectionFactory.useSession(block: Session.() -> R): R =
+    createConnection().createSession().use(block)
