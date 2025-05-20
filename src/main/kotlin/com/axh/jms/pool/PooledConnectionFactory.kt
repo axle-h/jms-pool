@@ -166,21 +166,6 @@ class PooledConnectionFactory @JvmOverloads constructor(
     }
 }
 
-interface Wrapped<T> {
-    fun unwrap(): T
-}
-
-interface WrappedConnection : Wrapped<Connection>, Connection
-interface WrappedSession : Wrapped<Session>, Session
-
-data class PooledConnectionFactoryOptions(
-    val transacted: Boolean = false,
-    val sessionMode: Int = Session.AUTO_ACKNOWLEDGE,
-    val maxConnections: Int = 2,
-    val maxSessionsPerConnection: Int = 100,
-    val maxSessionProducerCache: Int = 1000
-)
-
 @JvmOverloads
 fun ConnectionFactory.pooled(options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions()) =
     PooledConnectionFactory(this, options)
