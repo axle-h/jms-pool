@@ -2,6 +2,7 @@ package com.axh.jms.pool
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import strikt.api.expectThat
+import strikt.assertions.all
 import strikt.assertions.hasSize
 import strikt.assertions.isEqualTo
 import strikt.assertions.isFalse
@@ -84,10 +85,12 @@ class PooledConnectionFactoryTest {
 
     @Test
     fun `sessions round robin the connections`() {
-        pooled.createConnection().createSession()
-        pooled.createConnection().createSession()
+        repeat(4) {
+            pooled.createConnection().createSession()
+        }
         expectThat(factory.connections).hasSize(2)
-        expectThat(factory.sessions).hasSize(2)
+        expectThat(factory.sessions).hasSize(4)
+        expectThat(factory.connections).all { get { sessions.size }.isEqualTo(2) }
     }
 
     @Test
