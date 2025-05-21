@@ -6,7 +6,7 @@ fun interface InFlight {
 
 fun Iterable<InFlight>.sumInFlight() = InFlight { sumOf(InFlight::inFlight) }
 
-class LeastInFlight<T : InFlight>(val items: List<T>) : Iterable<T>, InFlight, AutoCloseable {
+class MinimumInFlightIterable<T : InFlight>(val items: List<T>) : Iterable<T>, InFlight, AutoCloseable {
     init {
         require(items.isNotEmpty()) { "At least one item is required" }
     }
@@ -26,4 +26,4 @@ class LeastInFlight<T : InFlight>(val items: List<T>) : Iterable<T>, InFlight, A
     }
 }
 
-fun <T : InFlight> List<T>.leastInFlight() = LeastInFlight(this)
+fun <T : InFlight> List<T>.toMinimumInFlightIterable() = MinimumInFlightIterable(this)

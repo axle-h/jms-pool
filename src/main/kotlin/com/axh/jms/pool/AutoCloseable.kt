@@ -6,3 +6,7 @@ fun AutoCloseable.tryClose() =
     } catch (_: Exception) {
         // do nothing
     }
+
+interface InternalAutoCloseable {
+    fun closeInternal()
+}

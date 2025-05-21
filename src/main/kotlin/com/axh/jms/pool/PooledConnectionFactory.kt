@@ -2,7 +2,7 @@ package com.axh.jms.pool
 
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.micrometer.core.instrument.MeterRegistry
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import io.micrometer.core.instrument.Tags
 import org.slf4j.LoggerFactory
 import java.util.concurrent.locks.ReentrantLock
 import javax.jms.Connection
@@ -18,22 +18,27 @@ import kotlin.concurrent.withLock
 class PooledConnectionFactory @JvmOverloads constructor(
     private val delegate: ConnectionFactory,
     private val options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions(),
-    meterRegistry: MeterRegistry = SimpleMeterRegistry(),
-) : ConnectionFactory {
+) : ConnectionFactory, AutoCloseable {
     private val logger = LoggerFactory.getLogger(PooledConnectionFactory::class.java)
     private val pooled = List(options.maxConnections) { PooledConnectionItem() }
-        .leastInFlight()
-        .apply {
-            meterRegistry.gauge("jms.pool.connections", options.tags, items) {
-                it.count(Health::healthy).toDouble()
-            }
-            meterRegistry.gauge("jms.pool.sessions", options.tags, items) {
-                it.sumOf(PooledConnectionItem::sessionCount).toDouble()
-            }
-            meterRegistry.gauge("jms.pool.sessions.active", options.tags, this) {
-                it.inFlight().toDouble()
-            }
+        .toMinimumInFlightIterable()
+    private val idleMonitor = IdleMonitor("session", options.maxIdleSessionTime) {
+        pooled.items.flatMap { it.sessions }
+    }
+
+    @JvmOverloads
+    fun registerMetrics(meterRegistry: MeterRegistry, tags: Tags = Tags.empty()) {
+        meterRegistry.gauge("jms.pool.connections", tags, pooled.items) {
+            it.count(Health::healthy).toDouble()
         }
+        meterRegistry.gauge("jms.pool.sessions", tags, pooled.items) {
+            it.sumOf(PooledConnectionItem::sessionCount).toDouble()
+        }
+        meterRegistry.gauge("jms.pool.sessions.active", tags, pooled) {
+            it.inFlight().toDouble()
+        }
+        meterRegistry.gauge("jms.pool.sessions.idle.closed", tags, idleMonitor.closedIdleCounter)
+    }
 
     private val poolIterator = pooled.iterator()
 
@@ -60,12 +65,12 @@ class PooledConnectionFactory @JvmOverloads constructor(
     override fun createContext(sessionMode: Int): JMSContext =
         createContext(null, null, sessionMode)
 
-    private sealed interface PooledAutoCloseable : AutoCloseable {
-        fun closeInternal()
+    override fun close() {
+        idleMonitor.close()
     }
 
-    private abstract inner class PooledItem<T> : AutoCloseable, InFlight, Health
-        where T : PooledAutoCloseable, T : InFlight {
+    private abstract inner class PooledItem<T> : IdleBase(), AutoCloseable, InternalAutoCloseable, InFlight, Health
+        where T : InternalAutoCloseable, T : InFlight {
         protected val lock = ReentrantLock()
         protected var value: T? = null
 
@@ -76,6 +81,8 @@ class PooledConnectionFactory @JvmOverloads constructor(
                 value = null
             }
         }
+
+        override fun closeInternal() = close()
 
         override fun inFlight(): Int =
             value?.inFlight() ?: 0
@@ -92,7 +99,7 @@ class PooledConnectionFactory @JvmOverloads constructor(
                         delegate.createConnection(userName, password)
                     else delegate.createConnection()
                 connection.exceptionListener = this
-                val sessions = List(options.maxSessionsPerConnection) { PooledSessionItem(connection) }.leastInFlight()
+                val sessions = List(options.maxSessionsPerConnection) { PooledSessionItem(connection) }.toMinimumInFlightIterable()
                 val pooledConnection = PooledConnection(connection, sessions)
                 value = pooledConnection
                 return pooledConnection
@@ -107,18 +114,18 @@ class PooledConnectionFactory @JvmOverloads constructor(
             close()
         }
 
-        val sessionCount: Int get() = value?.sessionCount ?: 0
+        val sessions get() = value?.sessions?.items ?: emptyList()
+
+        val sessionCount: Int get() = sessions.count(Health::healthy)
     }
 
     private inner class PooledConnection(
         private val delegate: Connection,
-        private val sessions: LeastInFlight<PooledSessionItem>
-    ) : Connection by delegate, InFlight by sessions, WrappedConnection, PooledAutoCloseable {
+        val sessions: MinimumInFlightIterable<PooledSessionItem>
+    ) : Connection by delegate, InFlight by sessions, WrappedConnection, InternalAutoCloseable, AutoCloseable {
         private val sessionsIterator = sessions.iterator()
 
-        val sessionCount: Int get() = sessions.items.count(Health::healthy)
-
-            override fun createSession(): Session =
+        override fun createSession(): Session =
             createSession(options.transacted, options.sessionMode)
 
         override fun createSession(sessionMode: Int): Session =
@@ -152,13 +159,13 @@ class PooledConnectionFactory @JvmOverloads constructor(
             value ?: lock.withLock {
                 logger.debug("Creating session")
                 val session = connection.createSession(transacted, acknowledgeMode)
-                val pooledSession = PooledSession(session)
+                val pooledSession = PooledSession(session, this)
                 value = pooledSession
                 return pooledSession
             }
     }
 
-    private inner class PooledSession(private val delegate: Session) : Session by delegate, InFlight, WrappedSession, PooledAutoCloseable {
+    private inner class PooledSession(private val delegate: Session, private val activated: Activated) : Session by delegate, InFlight, WrappedSession, InternalAutoCloseable, AutoCloseable {
         private val producers = Caffeine.newBuilder()
             .maximumSize(options.maxSessionProducerCache.toLong())
             .evictionListener<Destination, MessageProducer> { _, value, _ ->
@@ -166,11 +173,7 @@ class PooledConnectionFactory @JvmOverloads constructor(
             }
             .build(delegate::createProducer)
 
-        private var borrowed = false
-
-        fun borrow(): PooledSession = apply { borrowed = true }
-
-        override fun inFlight(): Int = if (borrowed) 1 else 0
+        fun borrow(): PooledSession = apply { activated.activate() }
 
         override fun createProducer(destination: Destination): MessageProducer =
             producers[destination]
@@ -179,8 +182,10 @@ class PooledConnectionFactory @JvmOverloads constructor(
 
         override fun close() {
             // public api, return to the pool
-            borrowed = false
+            activated.deactivate()
         }
+
+        override fun inFlight(): Int = if (activated.active) 1 else 0
 
         override fun closeInternal() {
             delegate.close()
@@ -189,8 +194,8 @@ class PooledConnectionFactory @JvmOverloads constructor(
 }
 
 @JvmOverloads
-fun ConnectionFactory.pooled(options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions(), meterRegistry: MeterRegistry = SimpleMeterRegistry()) =
-    PooledConnectionFactory(this, options, meterRegistry)
+fun ConnectionFactory.pooled(options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions()) =
+    PooledConnectionFactory(this, options)
 
 fun <R> ConnectionFactory.useSession(block: Session.() -> R): R =
     createConnection().createSession().use(block)

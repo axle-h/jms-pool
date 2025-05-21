@@ -7,7 +7,7 @@ import kotlin.test.Test
 class InFlightTest {
     @Test
     fun `picks the least in flight`() {
-        val inFlight = listOf(ONE, ZERO, TWO).leastInFlight()
+        val inFlight = listOf(ONE, ZERO, TWO).toMinimumInFlightIterable()
         val iterator = inFlight.iterator()
         repeat(3) { expectThat(iterator.next()).isSameInstanceAs(ZERO) }
     }
@@ -15,7 +15,7 @@ class InFlightTest {
     @Test
     fun `picks the first when all have same in flight`() {
         val first = InFlight { 0 }
-        val inFlight = listOf(first, ZERO, ZERO).leastInFlight()
+        val inFlight = listOf(first, ZERO, ZERO).toMinimumInFlightIterable()
         val iterator = inFlight.iterator()
         repeat(3) { expectThat(iterator.next()).isSameInstanceAs(first) }
     }

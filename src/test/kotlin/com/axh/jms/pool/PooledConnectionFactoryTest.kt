@@ -8,6 +8,7 @@ import strikt.assertions.isFalse
 import strikt.assertions.isSameInstanceAs
 import strikt.assertions.isTrue
 import strikt.assertions.single
+import kotlin.test.AfterTest
 import kotlin.test.Test
 
 class PooledConnectionFactoryTest {
@@ -19,11 +20,15 @@ class PooledConnectionFactoryTest {
             maxConnections = 2,
             maxSessionsPerConnection = 3
         ),
-        meterRegistry
-    )
+    ).apply { registerMetrics(meterRegistry) }
     private val connectionCountMeter = meterRegistry.get("jms.pool.connections").gauge()
     private val sessionCountMeter = meterRegistry.get("jms.pool.sessions").gauge()
     private val activeSessionCountMeter = meterRegistry.get("jms.pool.sessions.active").gauge()
+
+    @AfterTest
+    fun close() {
+        pooled.close()
+    }
 
     @Test
     fun `creates new connection`() {
