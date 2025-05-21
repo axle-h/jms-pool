@@ -1,7 +1,9 @@
 package com.axh.jms.pool
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import strikt.api.expectThat
 import strikt.assertions.hasSize
+import strikt.assertions.isEqualTo
 import strikt.assertions.isFalse
 import strikt.assertions.isSameInstanceAs
 import strikt.assertions.isTrue
@@ -11,12 +13,17 @@ import kotlin.test.Test
 class PooledConnectionFactoryTest {
 
     private val factory = FakeConnectionFactory()
+    private val meterRegistry = SimpleMeterRegistry()
     private val pooled = factory.pooled(
         PooledConnectionFactoryOptions(
             maxConnections = 2,
             maxSessionsPerConnection = 3
-        )
+        ),
+        meterRegistry
     )
+    private val connectionCountMeter = meterRegistry.get("jms.pool.connections").gauge()
+    private val sessionCountMeter = meterRegistry.get("jms.pool.sessions").gauge()
+    private val activeSessionCountMeter = meterRegistry.get("jms.pool.sessions.active").gauge()
 
     @Test
     fun `creates new connection`() {
@@ -122,5 +129,48 @@ class PooledConnectionFactoryTest {
             .hasSize(2)
         expectThat(producer2).isSameInstanceAs(producer1)
         expectThat(producer3).not().isSameInstanceAs(producer1)
+    }
+
+    @Test
+    fun `measures connection count`() {
+        expectThat(connectionCountMeter.value()).isEqualTo(0.0)
+        repeat (3) {
+            pooled.createConnection().createSession()
+        }
+        expectThat(connectionCountMeter.value()).isEqualTo(2.0)
+    }
+
+    @Test
+    fun `unhealthy connections are not counted`() {
+        pooled.createConnection().createSession()
+        expectThat(connectionCountMeter.value()).isEqualTo(1.0)
+        factory.connections.first().sendException()
+        expectThat(connectionCountMeter.value()).isEqualTo(0.0)
+    }
+
+    @Test
+    fun `measures session count`() {
+        expectThat(sessionCountMeter.value()).isEqualTo(0.0)
+        List (3) {
+            pooled.createConnection().createSession()
+        }.map(AutoCloseable::close)
+        expectThat(sessionCountMeter.value()).isEqualTo(3.0)
+    }
+
+    @Test
+    fun `measures active session count`() {
+        expectThat(activeSessionCountMeter.value()).isEqualTo(0.0)
+        repeat (3) {
+            pooled.createConnection().createSession()
+        }
+        expectThat(activeSessionCountMeter.value()).isEqualTo(3.0)
+    }
+
+    @Test
+    fun `inactive sessions are not counted`() {
+        val session = pooled.createConnection().createSession()
+        expectThat(activeSessionCountMeter.value()).isEqualTo(1.0)
+        session.close()
+        expectThat(activeSessionCountMeter.value()).isEqualTo(0.0)
     }
 }

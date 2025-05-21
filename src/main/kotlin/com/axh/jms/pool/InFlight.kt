@@ -6,7 +6,7 @@ fun interface InFlight {
 
 fun Iterable<InFlight>.sumInFlight() = InFlight { sumOf(InFlight::inFlight) }
 
-class LeastInFlight<T : InFlight>(private val items: List<T>) : Iterable<T>, InFlight, AutoCloseable {
+class LeastInFlight<T : InFlight>(val items: List<T>) : Iterable<T>, InFlight, AutoCloseable {
     init {
         require(items.isNotEmpty()) { "At least one item is required" }
     }

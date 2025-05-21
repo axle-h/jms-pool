@@ -1,6 +1,8 @@
 package com.axh.jms.pool
 
 import com.github.benmanes.caffeine.cache.Caffeine
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.slf4j.LoggerFactory
 import java.util.concurrent.locks.ReentrantLock
 import javax.jms.Connection
@@ -15,10 +17,24 @@ import kotlin.concurrent.withLock
 
 class PooledConnectionFactory @JvmOverloads constructor(
     private val delegate: ConnectionFactory,
-    private val options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions()
+    private val options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions(),
+    meterRegistry: MeterRegistry = SimpleMeterRegistry(),
 ) : ConnectionFactory {
     private val logger = LoggerFactory.getLogger(PooledConnectionFactory::class.java)
-    private val pooled = List(options.maxConnections) { PooledConnectionItem() }.leastInFlight()
+    private val pooled = List(options.maxConnections) { PooledConnectionItem() }
+        .leastInFlight()
+        .apply {
+            meterRegistry.gauge("jms.pool.connections", options.tags, items) {
+                it.count(Health::healthy).toDouble()
+            }
+            meterRegistry.gauge("jms.pool.sessions", options.tags, items) {
+                it.sumOf(PooledConnectionItem::sessionCount).toDouble()
+            }
+            meterRegistry.gauge("jms.pool.sessions.active", options.tags, this) {
+                it.inFlight().toDouble()
+            }
+        }
+
     private val poolIterator = pooled.iterator()
 
     override fun createConnection(): Connection =
@@ -48,7 +64,7 @@ class PooledConnectionFactory @JvmOverloads constructor(
         fun closeInternal()
     }
 
-    private abstract inner class PooledItem<T> : AutoCloseable, InFlight
+    private abstract inner class PooledItem<T> : AutoCloseable, InFlight, Health
         where T : PooledAutoCloseable, T : InFlight {
         protected val lock = ReentrantLock()
         protected var value: T? = null
@@ -63,6 +79,8 @@ class PooledConnectionFactory @JvmOverloads constructor(
 
         override fun inFlight(): Int =
             value?.inFlight() ?: 0
+
+        override fun healthy() = value != null
     }
 
     private inner class PooledConnectionItem : AutoCloseable, ExceptionListener, PooledItem<PooledConnection>() {
@@ -88,6 +106,8 @@ class PooledConnectionFactory @JvmOverloads constructor(
             }
             close()
         }
+
+        val sessionCount: Int get() = value?.sessionCount ?: 0
     }
 
     private inner class PooledConnection(
@@ -96,7 +116,9 @@ class PooledConnectionFactory @JvmOverloads constructor(
     ) : Connection by delegate, InFlight by sessions, WrappedConnection, PooledAutoCloseable {
         private val sessionsIterator = sessions.iterator()
 
-        override fun createSession(): Session =
+        val sessionCount: Int get() = sessions.items.count(Health::healthy)
+
+            override fun createSession(): Session =
             createSession(options.transacted, options.sessionMode)
 
         override fun createSession(sessionMode: Int): Session =
@@ -167,8 +189,8 @@ class PooledConnectionFactory @JvmOverloads constructor(
 }
 
 @JvmOverloads
-fun ConnectionFactory.pooled(options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions()) =
-    PooledConnectionFactory(this, options)
+fun ConnectionFactory.pooled(options: PooledConnectionFactoryOptions = PooledConnectionFactoryOptions(), meterRegistry: MeterRegistry = SimpleMeterRegistry()) =
+    PooledConnectionFactory(this, options, meterRegistry)
 
 fun <R> ConnectionFactory.useSession(block: Session.() -> R): R =
     createConnection().createSession().use(block)
