@@ -162,9 +162,7 @@ class PooledConnectionFactory @JvmOverloads constructor(
     private inner class PooledSession(private val delegate: Session, private val activated: Activated) : Session by delegate, InFlight, WrappedSession, InternalAutoCloseable, AutoCloseable {
         private val producers = Caffeine.newBuilder()
             .maximumSize(options.maxSessionProducerCache.toLong())
-            .evictionListener<Destination, MessageProducer> { _, value, _ ->
-                value?.close()
-            }
+            .evictionListener<Destination, MessageProducer> { _, value, _ -> value?.tryClose() }
             .build(delegate::createProducer)
 
         fun borrow(): PooledSession = apply { activated.activate() }
