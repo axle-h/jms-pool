@@ -65,11 +65,7 @@ class PooledConnectionFactory @JvmOverloads constructor(
     override fun createContext(sessionMode: Int): JMSContext =
         createContext(null, null, sessionMode)
 
-    override fun close() {
-        idleMonitor.close()
-    }
-
-    private abstract inner class PooledItem<T> : IdleBase(), AutoCloseable, InternalAutoCloseable, InFlight, Health
+    private abstract inner class PooledItem<T> : IdleBase(), AutoCloseable, InFlight, Health
         where T : InternalAutoCloseable, T : InFlight {
         protected val lock = ReentrantLock()
         protected var value: T? = null
@@ -81,8 +77,6 @@ class PooledConnectionFactory @JvmOverloads constructor(
                 value = null
             }
         }
-
-        override fun closeInternal() = close()
 
         override fun inFlight(): Int =
             value?.inFlight() ?: 0
@@ -149,8 +143,8 @@ class PooledConnectionFactory @JvmOverloads constructor(
         }
 
         override fun closeInternal() {
-            sessions.close()
-            delegate.close()
+            sessions.tryClose()
+            delegate.tryClose()
         }
     }
 
@@ -188,8 +182,13 @@ class PooledConnectionFactory @JvmOverloads constructor(
         override fun inFlight(): Int = if (activated.active) 1 else 0
 
         override fun closeInternal() {
-            delegate.close()
+            delegate.tryClose()
         }
+    }
+
+    override fun close() {
+        idleMonitor.tryClose()
+        pooled.tryClose()
     }
 }
 

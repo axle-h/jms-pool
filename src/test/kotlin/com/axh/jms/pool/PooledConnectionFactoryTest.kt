@@ -181,4 +181,12 @@ class PooledConnectionFactoryTest {
         session.close()
         expectThat(activeSessionCountMeter.value()).isEqualTo(0.0)
     }
+
+    @Test
+    fun `closes all connections and sessions`() {
+        pooled.createConnection().createSession()
+        pooled.close()
+        expectThat(factory.connections).all { get { closed }.isTrue() }
+        expectThat(factory.sessions).all { get { closed }.isTrue() }
+    }
 }

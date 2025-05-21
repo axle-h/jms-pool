@@ -46,7 +46,7 @@ class IdleMonitor<T>(
     private val maxIdle: Duration,
     private val period: Duration = maxIdle,
     private val items: () -> Iterable<T>,
-) : AutoCloseable where T : Idle, T : InternalAutoCloseable {
+) : AutoCloseable where T : Idle, T : AutoCloseable {
     private val logger = LoggerFactory.getLogger(IdleMonitor::class.java)
     val closedIdleCounter = AtomicLong(0)
 
@@ -63,7 +63,7 @@ class IdleMonitor<T>(
         for (item in items()) {
             val state = item.activeState()
             if (state is Inactive && state.duration > maxIdle) {
-                item.closeInternal()
+                item.tryClose()
                 closedIdleCounter.incrementAndGet()
             }
         }

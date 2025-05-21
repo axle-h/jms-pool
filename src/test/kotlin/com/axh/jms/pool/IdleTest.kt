@@ -94,11 +94,11 @@ class IdleTest {
         }
     }
 
-    private class StubItem(nowMillis: () -> Long) : IdleBase(nowMillis), InternalAutoCloseable {
+    private class StubItem(nowMillis: () -> Long) : IdleBase(nowMillis), AutoCloseable {
         val closedFuture = CompletableFuture<Boolean>()
         var closed = false
 
-        override fun closeInternal() {
+        override fun close() {
             closed = true
             closedFuture.complete(true)
         }
